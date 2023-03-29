@@ -19,13 +19,9 @@ namespace tg_metro_ekb_bot
         private const int TimeNum = 7;
         private const string FinalUpStation = "Проспект космонавтов";
         private const string FinalDownStation = "Ботаническая";
-        private const string WorkUpStationHeader = $"Рабочие дни в сторону станции \"{FinalUpStation}\"";
-        private const string WeekendUpStationHeader = $"Выходные дни в сторону станции \"{FinalUpStation}\"";
-        private const string WorkDownStationHeader = $"Рабочие дни в сторону станции \"{FinalDownStation}\"";
-        private const string WeekendDownStationHeader = $"Выходные дни в сторону станции \"{FinalDownStation}\"";
-        
-        private static Dictionary<string, Dictionary<string, string[]>> _schedule = new();
-        private static List<string> _buttons = new();
+
+        private static MetroTimetable _metroTimetable = new();
+        private static string[]? _buttons;
 
         private static async Task HandleUpdateAsync(ITelegramBotClient botClient, Update update, CancellationToken cancellationToken)
         {
@@ -39,31 +35,10 @@ namespace tg_metro_ekb_bot
             if (update.Type == Telegram.Bot.Types.Enums.UpdateType.Message)
             {
                 var message = update.Message;
-                if (message?.Text != null && _schedule.ContainsKey(message.Text))
+                if (message?.Text != null && _metroTimetable.ContainsStation(message.Text))
                 {
-                    var currentTime = DateTime.Now;
-                    var dayType = _isDayOff.CheckDayAsync(currentTime.AddMinutes(-45), cancellationToken).Result;
-                    var isWeekend = dayType == DayType.NotWorkingDay;
-                    //var isWeekend = currentTime.AddMinutes(-45).DayOfWeek is DayOfWeek.Saturday or DayOfWeek.Sunday;
-                    string[]? scheduleUp;
-                    string[]? scheduleDown;
-                    if (isWeekend)
-                    { 
-                        scheduleUp = _schedule[message.Text].FirstOrDefault(x => x.Key.Contains(WeekendUpStationHeader)).Value;
-                        scheduleDown = _schedule[message.Text].FirstOrDefault(x => x.Key.Contains(WeekendDownStationHeader)).Value;
-                    }
-                    else
-                    {
-                        scheduleUp = _schedule[message.Text].FirstOrDefault(x => x.Key.Contains(WorkUpStationHeader)).Value;
-                        scheduleDown = _schedule[message.Text]
-                            .FirstOrDefault(x => x.Key.Contains(WorkDownStationHeader)).Value;
-                    }
-                    //TODO: Вынесть в отдельный метод
-                    var scheduleUp1 = !message.Text.Contains(FinalUpStation) ? scheduleUp.Where(x => DateTime.Parse(x) >= currentTime).ToList() : null;
-                    var scheduleDown1 = !message.Text.Contains(FinalDownStation) ? scheduleDown.Where(x => DateTime.Parse(x) >= currentTime).ToList() : null;
-                    scheduleUp1?.AddRange(scheduleUp.Where(x => x.StartsWith("00:")).ToList());
-                    scheduleDown1?.AddRange(scheduleDown.Where(x => x.StartsWith("00:")).ToList());
-                    var reply = GetStationReply(scheduleUp1, scheduleDown1, currentTime, TimeNum);
+                    var currentDateTime = DateTime.Now;
+                    var reply = GetStationReply(message.Text, currentDateTime, TimeNum);
                     if (_bot != null)
                         await _bot.SendTextMessageAsync(
                             chatId: message.Chat,
@@ -99,79 +74,93 @@ namespace tg_metro_ekb_bot
             }
         }
         
-        private static string GetStationReply(IReadOnlyList<string>? scheduleUp,IReadOnlyList<string>? scheduleDown, DateTime currentTime, int timeNum)
+        private static string GetStationReply(string stationName, DateTime currentDateTime, int timeNum)
         {
+            currentDateTime = DateTime.Parse("2023-03-23 00:00:00");
+            // TODO: Решить проблему с расписанием в 00:00 
+            var dayTypeNow = _isDayOff.CheckDayAsync(currentDateTime.AddHours(-1)).Result;
+            var isWeekend = dayTypeNow == DayType.NotWorkingDay;
+            var currentTime = TimeOnly.FromDateTime(currentDateTime);
+            var dayType = TimetableExtensions.GetDayType(isWeekend);
+            var scheduleUp = _metroTimetable.GetNextTrainTimes(stationName, currentTime, dayType,TimetableExtensions.WayType.Up, timeNum);
+            var scheduleDown = _metroTimetable.GetNextTrainTimes(stationName, currentTime, dayType,TimetableExtensions.WayType.Down, timeNum);
+            if (scheduleUp.Length < timeNum)
+            {
+                var toAdd = timeNum - scheduleUp.Length;
+                var nextDay = currentDateTime.AddDays(1).Date;
+                var nextDayType = _isDayOff.CheckDayAsync(nextDay).Result;
+                var nextDayIsWeekend = nextDayType == DayType.NotWorkingDay;
+                var NextDayScheduleUp = _metroTimetable.GetNextTrainTimes(stationName, TimeOnly.Parse("00:00"), TimetableExtensions.GetDayType(nextDayIsWeekend), TimetableExtensions.WayType.Up, toAdd);
+                scheduleUp = scheduleUp.Concat(NextDayScheduleUp).ToArray();
+            }
+            if (scheduleDown.Length < timeNum)
+            {
+                var toAdd = timeNum - scheduleDown.Length;
+                var nextDay = currentDateTime.AddDays(1).Date;
+                var nextDayType = _isDayOff.CheckDayAsync(nextDay).Result;
+                var nextDayIsWeekend = nextDayType == DayType.NotWorkingDay;
+                var NextDayScheduleDown = _metroTimetable.GetNextTrainTimes(stationName, TimeOnly.Parse("00:00"), TimetableExtensions.GetDayType(nextDayIsWeekend), TimetableExtensions.WayType.Down, toAdd);
+                scheduleDown = scheduleDown.Concat(NextDayScheduleDown).ToArray();
+            }
             var nextTrainUp = "";
             var nextTrainDown = "";
-            if (scheduleUp != null)
+            foreach (var time in scheduleUp)
             {
-                var nextTrainUpTime = DateTime.Parse(scheduleUp[0]) - currentTime;
-                if (nextTrainUpTime.TotalMinutes < 0)
-                {
-                    // get time till midnight and add it to DateTime.Parse(scheduleDown[0])
-                    nextTrainUpTime = DateTime.Parse(scheduleUp[0]) - currentTime + new TimeSpan(24, 0, 0);
-                }
-                var hours = nextTrainUpTime.Hours > 0 ? $"{nextTrainUpTime.Hours} ч. " : "";
-                var minutes = nextTrainUpTime.Minutes > 0 ? $"{nextTrainUpTime.Minutes} мин." : "";
-                var nextTrainText = nextTrainUpTime.TotalMinutes > 1 ?  $"{hours}{minutes}" : "поезд прибывает";
-                    nextTrainUp += $"Следующий поезд в сторону {FinalUpStation} через: {nextTrainText}"
-                                   + "\n" + $"Следующие поезда в сторону {FinalUpStation} в: "
-                                   + string.Join(" ", scheduleUp.Take(timeNum)) + "\n\n";
+                Console.WriteLine(time);
             }
-            if (scheduleDown != null)
+            if (scheduleUp.Length > 0)
             {
-                var nextTrainDownTime = DateTime.Parse(scheduleDown[0]) - currentTime;
-
-                if (nextTrainDownTime.TotalMinutes < 0)
-                {
-                    // get time till midnight and add it to DateTime.Parse(scheduleDown[0])
-                    var midnight = DateTime.Parse("23:59") - currentTime + TimeSpan.FromMinutes(1);
-                    nextTrainDownTime = midnight + nextTrainDownTime;
-                }
-                var hours = nextTrainDownTime.Hours > 0 ? $"{nextTrainDownTime.Hours} ч. " : "";
-                var minutes = nextTrainDownTime.Minutes > 0 ? $"{nextTrainDownTime.Minutes} мин." : "";
-                var nextTrainText = nextTrainDownTime.TotalMinutes > 1 ?  $"{hours}{minutes}" : "поезд прибывает";
-                nextTrainDown += $"Следующий поезд в сторону {FinalDownStation} через: {nextTrainText}"
-                               + "\n" + $"Следующие поезда в сторону {FinalDownStation} в: "
-                               + string.Join(" ", scheduleDown.Take(timeNum)) + "\n\n";
+                nextTrainUp = BuildNextTrainString(scheduleUp, currentTime, FinalUpStation);
             }
-
+            if (scheduleDown.Length > 0)
+            {
+                nextTrainDown = BuildNextTrainString(scheduleDown, currentTime, FinalDownStation);
+            }
             var reply = $"{nextTrainUp}{nextTrainDown}";
             return reply;
         }
 
-        private static ReplyKeyboardMarkup СreateKeyboard([ Optional ] List<string> keys)
+        private static string BuildNextTrainString(TimeOnly[] schedule, TimeOnly currentTime, string lastStation)
         {
-            if (keys.Count == 0)
+            var nextTrainTime = schedule.First() - currentTime;
+            var hours = nextTrainTime.Hours > 0 ? $"{nextTrainTime.Hours} ч. " : "";
+            var minutes = nextTrainTime.Minutes > 0 ? $"{nextTrainTime.Minutes} мин." : "";
+            var nextTrainText = nextTrainTime.TotalMinutes > 1 ? $"{hours}{minutes}" : "поезд прибывает";
+            var returnString = $"Следующий поезд в сторону {lastStation} через: {nextTrainText}"
+                           + "\n" + $"Следующие поезда в сторону {lastStation} в: "
+                           + string.Join(" ", schedule) + "\n\n";
+            return returnString;
+        }
+
+        private static ReplyKeyboardMarkup СreateKeyboard([ Optional ] IReadOnlyCollection<string>? keys)
+        {
+            if (keys == null || keys.Count == 0)
             {
-                //TODO: Добавить кнопки из keys
+                //TODO: Добавить кнопки из _buttons
                 return new ReplyKeyboardMarkup("Расписание");
             }
-            else
+            // ReSharper disable once RedundantNameQualifier
+            return new Telegram.Bot.Types.ReplyMarkups.ReplyKeyboardMarkup(new[]
             {
-                // ReSharper disable once RedundantNameQualifier
-                return new Telegram.Bot.Types.ReplyMarkups.ReplyKeyboardMarkup(new[]
+                new[] // first row
                 {
-                    new[] // first row
-                    {
-                        new KeyboardButton("Чкаловская"),
-                        new KeyboardButton("Площадь 1905 года"),
-                        new KeyboardButton("Геологическая"),
-                    },
-                    new[] // second row
-                    {
-                        new KeyboardButton("Ботаническая"),
-                        new KeyboardButton("Динамо"),
-                        new KeyboardButton("Уральская"),
-                    },
-                    new[] // third row
-                    {
-                        new KeyboardButton("Машиностроителей"),
-                        new KeyboardButton("Уралмаш"),
-                        new KeyboardButton("Проспект космонавтов"),
-                    },
-                });
-            }
+                    new KeyboardButton("Чкаловская"),
+                    new KeyboardButton("Площадь 1905 года"),
+                    new KeyboardButton("Геологическая"),
+                },
+                new[] // second row
+                {
+                    new KeyboardButton("Ботаническая"),
+                    new KeyboardButton("Динамо"),
+                    new KeyboardButton("Уральская"),
+                },
+                new[] // third row
+                {
+                    new KeyboardButton("Машиностроителей"),
+                    new KeyboardButton("Уралмаш"),
+                    new KeyboardButton("Проспект космонавтов"),
+                },
+            });
         }
 
         private static Task HandleErrorAsync(ITelegramBotClient botClient, Exception exception, CancellationToken cancellationToken)
@@ -182,20 +171,9 @@ namespace tg_metro_ekb_bot
 
         private static void UpdateSchedule()
         {
-            _schedule = MetroTimetable.GetMetroTimetable();
-            // foreach (var key in _schedule)
-            // {
-            //     foreach (var key1 in key.Value)
-            //     {
-            //         Console.WriteLine(key1.Key);
-            //         foreach (var s in key1.Value)
-            //         {
-            //             Console.WriteLine(s);
-            //         }
-            //     }
-            // }
+            _metroTimetable.FillMetroTimetable();
             Console.WriteLine("Расписание получено в " + DateTime.Now);
-            _buttons = new List<string>(_schedule.Keys);
+            _buttons = _metroTimetable.GetStationNames();
         }
 
 
@@ -215,23 +193,20 @@ namespace tg_metro_ekb_bot
                 .UseDefaultCountry(Country.Russia)
                 .Create();
             _isDayOff = new IsDayOff(settings);
-
             Console.WriteLine("Запущен бот " + _bot.GetMeAsync().Result.FirstName);
+            _metroTimetable = new MetroTimetable();
+            _buttons = _metroTimetable.GetStationNames();
             var task1 = new Task(UpdateSchedule);
             task1.Start();
-            var unused = new Timer(_ => UpdateSchedule(), null, TimeSpan.Zero, TimeSpan.FromHours(2));
-            Console.WriteLine("Расписание обновляется каждые 2 часа");
+            var unused = new Timer(_ => UpdateSchedule(), null, TimeSpan.Zero, TimeSpan.FromHours(3));
+            Console.WriteLine("Расписание обновляется каждые 3 часа");
             Console.WriteLine("Получение расписания...");
             task1.Wait();
-            Console.WriteLine("Запуск бота...");
             task1.Dispose();
+            Console.WriteLine("Запуск бота...");
             var cts = new CancellationTokenSource();
             var cancellationToken = cts.Token;
-            var receiverOptions = new ReceiverOptions
-            {
-                // ReSharper disable once RedundantEmptyObjectOrCollectionInitializer
-                AllowedUpdates = { }, // receive all update types
-            };
+            var receiverOptions = new ReceiverOptions();
             _bot.StartReceiving(
                     HandleUpdateAsync,
                     HandleErrorAsync,

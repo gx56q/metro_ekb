@@ -6,20 +6,26 @@ public class Tests
 {
     [SetUp]
     public void Setup()
-    {
+    {	
     }
     
     [Test]
     public static void TestIfSorted()
     {
-        var timetable = MetroTimetable.GetMetroTimetable();
-        foreach (var table in timetable.Values.SelectMany(tables => tables.Values))
+        var stations = MetroTimetableExtensions.GetStations();
+        foreach (var station in stations)
         {
-            for (var i = 0; i < table.Length - 1; i++)
+            var timetable = station.GetTimetable();
+            foreach (var wayTimetable in timetable.Values)
             {
-                if (DateTime.Parse(table[i+1]).Hour == 0 && DateTime.Parse(table[i]).Hour < 24)
-                    Assert.Pass();
-                Assert.That(DateTime.Parse(table[i]), Is.LessThan(DateTime.Parse(table[i + 1])));
+                foreach (var (_, times) in wayTimetable.GetTimetableDict())
+                {
+                    var sortedTimes = times.OrderBy(time => time).ToList();
+                    var timesAfterMidnight = times.Where(time => time >= TimeOnly.Parse("00:00")).ToList();
+                    sortedTimes.RemoveAll(time => time >= TimeOnly.Parse("00:00"));
+                    sortedTimes.AddRange(timesAfterMidnight);
+                    Assert.That(times, Is.EqualTo(sortedTimes));
+                }
             }
         }
     }

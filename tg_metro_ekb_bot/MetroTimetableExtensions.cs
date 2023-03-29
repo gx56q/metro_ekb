@@ -4,7 +4,7 @@ using HtmlAgilityPack;
 
 namespace tg_metro_ekb_bot;
 
-public static class MetroTimetable
+public static class MetroTimetableExtensions
 {
     private const string Encoding = "utf-8";
     private const string StationsUrl = "https://metro-ektb.ru/podrobnye-grafiki-po-stanciyam/";
@@ -13,25 +13,22 @@ public static class MetroTimetable
     
     private static string GetWebsite(string url)
     {
-        //Console.WriteLine(url);
         System.Text.Encoding.RegisterProvider(CodePagesEncodingProvider.Instance);
         var win1251 = System.Text.Encoding.GetEncoding(Encoding);
 #pragma warning disable SYSLIB0014
         var client = new System.Net.WebClient();
 #pragma warning restore SYSLIB0014
         client.Encoding = win1251;
-        //var web = client.DownloadStringTaskAsync(url).Result;
         return client.DownloadString(url);
     }
 
-    private static Dictionary<string, string[]> GetTimetable(string html)
+    private static Station GetStationFromHtml(string html, string stationName)
     {
-        var timetable = new Dictionary<string, string[]>();
         var doc = new HtmlDocument();
         doc.LoadHtml(html);
         var times = doc.DocumentNode.SelectNodes(TimesXPath);
         var header = doc.DocumentNode.SelectNodes(HeadersXPath);
-        if (times == null || header == null) return timetable;
+        if (times == null || header == null) return new Station();
         var timetable1 = times.Select((x, i) => new { x, i })
             .ToDictionary(x => header[x.i]
                     .InnerText,
@@ -60,11 +57,22 @@ public static class MetroTimetable
                 .Replace(",",
                     "")
                 .Replace(';', ':'));
-        timetable = timetable2.ToDictionary(x => x.Key, x => regex.Matches(x.Value).Select(y => y.Value).ToArray());
-        return timetable;
+        var timetable = timetable2.ToDictionary(x => x.Key, x => regex.Matches(x.Value).Select(y => y.Value).ToArray());
+        var station = new Station(stationName);
+        foreach (var (key, value) in timetable)
+        {
+            var dateType = key.Contains("Рабочие дни")
+                ? TimetableExtensions.DayType.Weekday
+                : TimetableExtensions.DayType.Weekend;
+            var wayType = key.Contains("Ботаническая")
+                ? TimetableExtensions.WayType.Down
+                : TimetableExtensions.WayType.Up;
+            station.AddTime(value, dateType, wayType);
+        }
+        return station;
     }
 
-    private static Dictionary<string, string> GetStationLinks(string html)
+    private static Dictionary<string, string> GetStationsLinks(string html)
     {
         var stationLinks = new Dictionary<string, string>();
         var doc = new HtmlDocument();
@@ -81,27 +89,18 @@ public static class MetroTimetable
         return stationLinks;
     }
     
-    public static Dictionary<string, Dictionary<string, string[]>> GetMetroTimetable()
+    public static Station[] GetStations()
     {
-        var timetable = new Dictionary<string, Dictionary<string, string[]>>();
+        var metroTimetable = new List<Station>();
         var stationsWebsite = GetWebsite(StationsUrl);
-        var stations = GetStationLinks(stationsWebsite);
-        foreach (var station in stations)
+        var stationsLinks = GetStationsLinks(stationsWebsite);
+        foreach (var stationLink in stationsLinks)
         {
-            var stationHtml = GetWebsite(station.Value);
-            var stationTimetable = GetTimetable(stationHtml);
-            // foreach (var stt in stationTimetable)
-            // {
-            //     Console.WriteLine(station.Key+' '+stt.Key);
-            //     foreach (var sttt in stt.Value)
-            //     {
-            //         Console.Write(sttt+' ');
-            //     }
-            //     Console.WriteLine();
-            // }
-            timetable.Add(station.Key, stationTimetable);
+            var stationHtml = GetWebsite(stationLink.Value);
+            var station = GetStationFromHtml(stationHtml, stationLink.Key);
+            metroTimetable.Add(station);
         }
-        return timetable;
+        return metroTimetable.ToArray();
     }
     
     public static List<string> GetStationTimetable(string station, Dictionary<string, Dictionary<string, string[]>> timetable)
