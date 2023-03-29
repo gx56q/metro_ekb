@@ -16,7 +16,9 @@ public static class MetroTimetable
         //Console.WriteLine(url);
         System.Text.Encoding.RegisterProvider(CodePagesEncodingProvider.Instance);
         var win1251 = System.Text.Encoding.GetEncoding(Encoding);
+#pragma warning disable SYSLIB0014
         var client = new System.Net.WebClient();
+#pragma warning restore SYSLIB0014
         client.Encoding = win1251;
         //var web = client.DownloadStringTaskAsync(url).Result;
         return client.DownloadString(url);
